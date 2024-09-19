@@ -88,7 +88,6 @@ curl -X POST http://localhost:3000/generate-images
 
 Generated images are saved in the `output` folder in the project root directory. The API response includes the seed used for generation and the paths of the saved images.
 
-Example response:
 
 ## Troubleshooting
 
