@@ -26,7 +26,8 @@ async function queuePrompt(prompt: any): Promise<any> {
   const data = JSON.stringify(p);
 
   console.log(`Sending prompt to ${serverAddress}/prompt`);
-  console.log(`Prompt data: ${data}`);
+  // Remove logging of entire prompt data
+  // console.log(`Prompt data: ${data}`);
 
   try {
     const response = await fetch(`http://${serverAddress}/prompt`, {
@@ -216,10 +217,10 @@ app.post("/test-generate-images", async (req, res) => {
 
         // Check if we've stopped receiving messages for a while
         const checkInterval = setInterval(() => {
-          if (Date.now() - lastMessageTime > 4000) {
-            // Changed from 10000 to 5000 (4 seconds)
+          if (Date.now() - lastMessageTime > 3000) {
+            // Changed from 10000 to 5000 (3 seconds)
             console.log(
-              "No messages received for 4 seconds. Assuming completion."
+              "No messages received for 3 seconds. Assuming completion."
             );
             clearInterval(checkInterval);
             clearTimeout(timeout);
@@ -254,7 +255,8 @@ app.post("/test-generate-images", async (req, res) => {
       return;
     }
 
-    console.log("History content:", JSON.stringify(history, null, 2));
+    // Remove logging of entire history content
+    // console.log("History content:", JSON.stringify(history, null, 2));
 
     for (const nodeId in history[prompt_id].outputs) {
       const nodeOutput = history[prompt_id].outputs[nodeId];
