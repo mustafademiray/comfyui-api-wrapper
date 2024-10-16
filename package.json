@@ -7,6 +7,7 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "queue": "^7.0.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
   },

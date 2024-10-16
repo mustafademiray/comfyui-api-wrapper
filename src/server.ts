@@ -6,11 +6,12 @@ import fs from "fs";
 import path from "path";
 import { promisify } from "util";
 import { promises as fsPromises } from "fs";
+import EventEmitter from "events";
 
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5566;
 const serverAddress = process.env.COMFYUI_SERVER_ADDRESS || "localhost:8188";
 
 const readFileAsync = promisify(fs.readFile);
@@ -18,6 +19,14 @@ const writeFileAsync = promisify(fs.writeFile);
 const mkdirAsync = promisify(fs.mkdir);
 
 app.use(express.json());
+
+// Add this global map to store message handlers for each request
+const messageHandlers = new Map<string, EventEmitter>();
+
+// Add this function at the top of your file, after the imports
+function getRandomSeed(): number {
+  return Math.floor(Math.random() * 1000000000) + 1;
+}
 
 // Queue prompt function
 async function queuePrompt(prompt: any): Promise<any> {
@@ -90,7 +99,7 @@ let workflowJson: any;
 async function loadWorkflow() {
   try {
     const workflowData = await readFileAsync(
-      path.join(__dirname, "..", "workflow_api.json"),
+      path.join(__dirname, "..", "cn_img2img_v2.json"),
       "utf-8"
     );
     workflowJson = JSON.parse(workflowData);
@@ -133,175 +142,68 @@ async function saveImages(
   return savedPaths;
 }
 
+// Update the encodeImageToBase64 function
+async function encodeImageToBase64(imagePath: string): Promise<string> {
+  const imageBuffer = await fsPromises.readFile(imagePath);
+  const base64 = imageBuffer.toString("base64");
+  return `data:image/png;base64,${base64}`;
+}
+
 // Test generate images function
 app.post("/test-generate-images", async (req, res) => {
   try {
     console.log("Starting test-generate-images...");
-    const clientId = uuidv4();
-    const ws = new WebSocket(`ws://${serverAddress}/ws?clientId=${clientId}`);
+    const { positivePrompt, negativePrompt } = req.body;
 
-    ws.on("open", () => {
-      console.log("WebSocket connection opened");
-    });
-
-    // Use the pre-loaded workflow
-    const workflow = JSON.parse(JSON.stringify(workflowJson));
-
-    // Customize workflow with some default values
-    workflow["6"]["inputs"]["text"] =
-      "(Digital Artwork:1.3) of (Sketched:1.1) octane render of a mysterious dense forest with a large (magical:1.2) gate (portal:1.3) to the eternal kingdom, blade runner, intricate (vine:1.2), massive tree in liquid metal, realistic digital painting portrait, shot at 8k resolution, petrol liquid, pastel color, splash art, blue and purple magic universe, light engrave in intricate details, (light particle:1.2), (game concept:1.3), (depth of field:1.3), global illumination,Highly Detailed,Trending on ArtStation";
-    workflow["7"]["inputs"]["text"] = "ugly, deformed";
-    workflow["3"]["inputs"]["steps"] = 15;
-    workflow["5"]["inputs"]["width"] = 512;
-    workflow["5"]["inputs"]["height"] = 512;
-    workflow["3"]["inputs"]["seed"] =
-      Math.floor(Math.random() * 1000000000) + 1;
-
-    console.log("Queueing prompt...");
-    const { prompt_id } = await queuePrompt(workflow);
-    console.log(`Prompt queued with ID: ${prompt_id}`);
-
-    const outputImages: { [key: string]: Buffer[] } = {};
-
-    function handleMessages() {
-      return new Promise((resolve, reject) => {
-        let messageCount = 0;
-        const maxMessages = 500;
-        let lastMessageTime = Date.now();
-        const timeout = setTimeout(() => {
-          console.log("Timeout reached. Resolving handleMessages.");
-          resolve(null);
-        }, 600000); // 10 minutes timeout
-
-        ws.on("message", async (data: WebSocket.Data) => {
-          messageCount++;
-          lastMessageTime = Date.now();
-          console.log(`Message received: ${messageCount}`);
-          if (data instanceof Buffer) {
-            console.log(
-              `Received binary data (likely a preview image), size: ${data.length} bytes`
-            );
-          } else if (typeof data === "string") {
-            try {
-              const message = JSON.parse(data);
-              console.log(`Received message: ${JSON.stringify(message)}`);
-              if (message.type === "progress") {
-                console.log(
-                  `Progress: ${message.data.value}/${message.data.max}`
-                );
-              } else if (message.type === "executing") {
-                console.log(`Executing node: ${message.data.node}`);
-                if (
-                  message.data.node === null &&
-                  message.data.prompt_id === prompt_id
-                ) {
-                  console.log("Execution complete");
-                  clearTimeout(timeout);
-                  resolve(message);
-                  return;
-                }
-              }
-            } catch (error) {
-              console.error("Error parsing WebSocket message:", error);
-            }
-          }
-
-          if (messageCount >= maxMessages) {
-            console.log(
-              `Reached maximum message count (${maxMessages}). Resolving.`
-            );
-            clearTimeout(timeout);
-            resolve(null);
-          }
-        });
-
-        // Check if we've stopped receiving messages for a while
-        const checkInterval = setInterval(() => {
-          if (Date.now() - lastMessageTime > 3000) {
-            // Changed from 10000 to 5000 (3 seconds)
-            console.log(
-              "No messages received for 3 seconds. Assuming completion."
-            );
-            clearInterval(checkInterval);
-            clearTimeout(timeout);
-            resolve(null);
-          }
-        }, 1000);
-
-        ws.on("close", () => {
-          console.log("WebSocket connection closed");
-          clearTimeout(timeout);
-          resolve(null);
-        });
-
-        ws.on("error", (error) => {
-          console.error("WebSocket error:", error);
-          clearTimeout(timeout);
-          reject(error);
-        });
+    if (!positivePrompt || !negativePrompt) {
+      console.error("Missing prompts:", { positivePrompt, negativePrompt });
+      return res.status(400).json({
+        error: "Both positive and negative prompts are required",
+        receivedPositive: !!positivePrompt,
+        receivedNegative: !!negativePrompt,
       });
     }
 
-    console.log("Waiting for execution to complete...");
-    await handleMessages();
+    console.log(`Received positive prompt: ${positivePrompt}`);
+    console.log(`Received negative prompt: ${negativePrompt}`);
 
-    console.log("Fetching history...");
-    const history = await getHistory(prompt_id);
-    console.log("History fetched, processing outputs...");
+    // Use the pre-loaded workflow without modifications
+    const workflow = JSON.parse(JSON.stringify(workflowJson));
+    console.log(`Workflow JSON cloned`);
 
-    if (!history[prompt_id] || !history[prompt_id].outputs) {
-      console.log("No outputs found in history");
-      res.status(500).json({ error: "No outputs found in history" });
-      return;
+    // Set the input image path (use absolute path)
+    const inputImagePath = path.resolve(__dirname, "..", "input", "lukso.png");
+    console.log(`Using input image path: ${inputImagePath}`);
+
+    // Check if the file exists
+    if (!fs.existsSync(inputImagePath)) {
+      throw new Error(`Input image not found: ${inputImagePath}`);
     }
 
-    // Remove logging of entire history content
-    // console.log("History content:", JSON.stringify(history, null, 2));
+    // Update the image input in the workflow with the file path
+    workflow["13"]["inputs"]["image"] = inputImagePath;
 
-    for (const nodeId in history[prompt_id].outputs) {
-      const nodeOutput = history[prompt_id].outputs[nodeId];
-      if ("images" in nodeOutput) {
-        console.log(`Processing images for node: ${nodeId}`);
-        const imagesOutput: Buffer[] = [];
-        for (const image of nodeOutput.images) {
-          console.log(`Fetching image: ${image.filename}`);
-          try {
-            const imageData = await getImage(
-              image.filename,
-              image.subfolder,
-              image.type
-            );
-            imagesOutput.push(imageData);
-            console.log(
-              `Image fetched successfully: ${image.filename}, size: ${imageData.length} bytes`
-            );
-          } catch (error) {
-            console.error(`Error fetching image ${image.filename}:`, error);
-          }
-        }
-        outputImages[nodeId] = imagesOutput;
-      }
-    }
+    // Ensure the LoadImage node is configured correctly
+    workflow["13"]["class_type"] = "LoadImage";
 
-    if (Object.keys(outputImages).length === 0) {
-      console.log("No images were processed");
-      res.status(500).json({ error: "No images were processed" });
-      return;
-    }
+    // Set a random seed
+    workflow["3"]["inputs"]["seed"] = getRandomSeed();
+    console.log(`Using random seed: ${workflow["3"]["inputs"]["seed"]}`);
 
-    console.log("All images processed, saving...");
-    const savedPaths = await saveImages(
-      outputImages,
-      workflow["3"]["inputs"]["seed"]
-    );
+    // Set positive and negative prompts
+    workflow["6"]["inputs"]["text"] = positivePrompt;
+    workflow["7"]["inputs"]["text"] = negativePrompt;
 
-    console.log("Images saved, sending response...");
-    res.json({
-      seed: workflow["3"]["inputs"]["seed"],
-      savedPaths: savedPaths,
+    console.log("Final workflow JSON:");
+    console.log(JSON.stringify(workflow, null, 2));
+
+    const result = await new Promise((resolve, reject) => {
+      imageGenerationQueue.enqueue({ resolve, reject, workflow });
+      processQueue(); // Start processing the queue if it's not already processing
     });
 
-    ws.close();
+    console.log(`Images generated, sending response...`);
+    res.json(result);
   } catch (error) {
     console.error("Error:", error);
     res
@@ -310,19 +212,212 @@ app.post("/test-generate-images", async (req, res) => {
   }
 });
 
-// Generate images function
+// Add this class after the imports and before the existing code
+
+class Queue<T> {
+  private items: T[] = [];
+
+  enqueue(item: T): void {
+    this.items.push(item);
+  }
+
+  dequeue(): T | undefined {
+    return this.items.shift();
+  }
+
+  peek(): T | undefined {
+    return this.items[0];
+  }
+
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+
+  size(): number {
+    return this.items.length;
+  }
+}
+
+// Create a queue for image generation requests
+const imageGenerationQueue = new Queue<{
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  workflow: any;
+}>();
+
+// Flag to track if a request is currently being processed
+let isProcessingRequest = false;
+
+// Function to process the queue
+async function processQueue() {
+  if (isProcessingRequest || imageGenerationQueue.isEmpty()) {
+    return;
+  }
+
+  isProcessingRequest = true;
+  const request = imageGenerationQueue.dequeue();
+
+  if (!request) {
+    isProcessingRequest = false;
+    return;
+  }
+
+  try {
+    const result = await generateImage(request.workflow);
+    request.resolve(result);
+  } catch (error) {
+    request.reject(error);
+  } finally {
+    isProcessingRequest = false;
+    processQueue(); // Process the next request in the queue
+  }
+}
+
+// Function to generate image (extracted from the existing code)
+async function generateImage(
+  workflow: any
+): Promise<{ seed: number; savedPaths: string[] }> {
+  const clientId = uuidv4();
+  const ws = new WebSocket(`ws://${serverAddress}/ws?clientId=${clientId}`);
+
+  const { prompt_id } = await queuePrompt(workflow);
+
+  const outputImages: { [key: string]: Buffer[] } = {};
+
+  return new Promise<{ seed: number; savedPaths: string[] }>(
+    (resolve, reject) => {
+      const eventEmitter = new EventEmitter();
+      messageHandlers.set(clientId, eventEmitter);
+
+      let messageCount = 0;
+      const timeout = setTimeout(() => {
+        console.log(
+          `Timeout reached for ${clientId}. Resolving generateImage.`
+        );
+        messageHandlers.delete(clientId);
+        reject(new Error("Timeout reached while generating image"));
+      }, 300000); // 5 minutes timeout
+
+      eventEmitter.on("message", async (data: WebSocket.Data) => {
+        messageCount++;
+        console.log(`Message ${messageCount} received for ${clientId}`);
+
+        if (messageCount === 3) {
+          console.log(
+            `Processing image after receiving 3rd message for ${clientId}`
+          );
+          try {
+            const history = await getHistory(prompt_id);
+            for (const nodeId in history[prompt_id].outputs) {
+              const nodeOutput = history[prompt_id].outputs[nodeId];
+              if ("images" in nodeOutput) {
+                const imagesOutput: Buffer[] = [];
+                for (const image of nodeOutput.images) {
+                  const imageData = await getImage(
+                    image.filename,
+                    image.subfolder,
+                    image.type
+                  );
+                  imagesOutput.push(imageData);
+                }
+                outputImages[nodeId] = imagesOutput;
+              }
+            }
+
+            const savedPaths = await saveImages(
+              outputImages,
+              workflow["3"]["inputs"]["seed"]
+            );
+
+            clearTimeout(timeout);
+            messageHandlers.delete(clientId);
+            ws.close();
+            resolve({
+              seed: workflow["3"]["inputs"]["seed"],
+              savedPaths: savedPaths,
+            });
+          } catch (error) {
+            console.error(`Error processing images for ${clientId}:`, error);
+            clearTimeout(timeout);
+            messageHandlers.delete(clientId);
+            ws.close();
+            reject(error);
+          }
+        } else if (typeof data === "string") {
+          try {
+            const message = JSON.parse(data);
+            console.log(
+              `Received message for ${clientId}: ${JSON.stringify(message)}`
+            );
+            if (message.type === "progress") {
+              console.log(
+                `Progress for ${clientId}: ${message.data.value}/${message.data.max}`
+              );
+            } else if (message.type === "executing") {
+              console.log(
+                `Executing node for ${clientId}: ${message.data.node}`
+              );
+            }
+          } catch (error) {
+            console.error(
+              `Error parsing WebSocket message for ${clientId}:`,
+              error
+            );
+          }
+        }
+      });
+
+      eventEmitter.on("close", () => {
+        console.log(`WebSocket connection closed for ${clientId}`);
+        clearTimeout(timeout);
+        messageHandlers.delete(clientId);
+        reject(new Error("WebSocket connection closed unexpectedly"));
+      });
+
+      eventEmitter.on("error", (error) => {
+        console.error(`WebSocket error for ${clientId}:`, error);
+        clearTimeout(timeout);
+        messageHandlers.delete(clientId);
+        reject(error);
+      });
+
+      ws.on("message", (data) => {
+        const handler = messageHandlers.get(clientId);
+        if (handler) {
+          handler.emit("message", data);
+        }
+      });
+
+      ws.on("close", () => {
+        const handler = messageHandlers.get(clientId);
+        if (handler) {
+          handler.emit("close");
+        }
+      });
+
+      ws.on("error", (error) => {
+        const handler = messageHandlers.get(clientId);
+        if (handler) {
+          handler.emit("error", error);
+        }
+      });
+    }
+  );
+}
+
+// Update the generate-images endpoint
 app.post("/generate-images", async (req, res) => {
   try {
     const {
       positivePrompt,
       negativePrompt,
-      steps = 25,
-      resolution = [512, 512],
+      steps = 30,
+      resolution = [1024, 1024],
+      inputImagePath,
+      seed,
     } = req.body;
 
-    const ws = new WebSocket(`ws://${serverAddress}/ws?clientId=${uuidv4()}`);
-
-    // Use the pre-loaded workflow instead of reading from file
+    // Use the pre-loaded workflow
     const workflow = JSON.parse(JSON.stringify(workflowJson));
 
     // Customize workflow based on inputs
@@ -331,68 +426,24 @@ app.post("/generate-images", async (req, res) => {
     workflow["3"]["inputs"]["steps"] = steps;
     workflow["5"]["inputs"]["width"] = resolution[0];
     workflow["5"]["inputs"]["height"] = resolution[1];
-    workflow["3"]["inputs"]["seed"] =
-      Math.floor(Math.random() * 1000000000) + 1;
+    workflow["3"]["inputs"]["seed"] = seed || getRandomSeed();
+    workflow["13"]["inputs"]["image"] = inputImagePath;
 
-    const { prompt_id } = await queuePrompt(workflow);
+    console.log(`Using seed: ${workflow["3"]["inputs"]["seed"]}`);
+    console.log("Final workflow JSON:");
+    console.log(JSON.stringify(workflow, null, 2));
 
-    const outputImages: { [key: string]: Buffer[] } = {};
+    const result = await new Promise((resolve, reject) => {
+      imageGenerationQueue.enqueue({ resolve, reject, workflow });
+      processQueue(); // Start processing the queue if it's not already processing
+    });
 
-    return new Promise<{ seed: number; savedPaths: string[] }>(
-      (resolve, reject) => {
-        ws.on("message", async (data: WebSocket.Data) => {
-          if (typeof data === "string") {
-            const message = JSON.parse(data);
-            if (
-              message.type === "executing" &&
-              message.data.node === null &&
-              message.data.prompt_id === prompt_id
-            ) {
-              try {
-                const history = await getHistory(prompt_id);
-                for (const nodeId in history[prompt_id].outputs) {
-                  const nodeOutput = history[prompt_id].outputs[nodeId];
-                  if ("images" in nodeOutput) {
-                    const imagesOutput: Buffer[] = [];
-                    for (const image of nodeOutput.images) {
-                      const imageData = await getImage(
-                        image.filename,
-                        image.subfolder,
-                        image.type
-                      );
-                      imagesOutput.push(imageData);
-                    }
-                    outputImages[nodeId] = imagesOutput;
-                  }
-                }
-
-                const savedPaths = await saveImages(
-                  outputImages,
-                  workflow["3"]["inputs"]["seed"]
-                );
-
-                resolve({
-                  seed: workflow["3"]["inputs"]["seed"],
-                  savedPaths: savedPaths,
-                });
-              } catch (error) {
-                reject(error);
-              } finally {
-                ws.close();
-              }
-            }
-          }
-        });
-
-        ws.on("error", (error) => {
-          console.error("WebSocket error:", error);
-          reject(error);
-        });
-      }
-    );
+    res.json(result);
   } catch (error) {
     console.error("Error:", error);
-    throw error;
+    res
+      .status(500)
+      .json({ error: "An error occurred while generating images" });
   }
 });
 
